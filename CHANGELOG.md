@@ -12,6 +12,8 @@
 - Generate Next.js route types before UI checking so `make test` works before the first UI build.
 
 ### Maintenance
+- Convert disabled boolean panic settings from Firecracker's guest config to numeric zero when
+  building newer kernels that define them as integers, avoiding invalid-value Kconfig warnings.
 - Correct the web panel documentation and project map after the Go agent/CLI migration:
   the daemon owns authentication/API/WebSockets on port 4100, and Next.js is the internal UI
   renderer on port 4110. Preserve the bash debugging/maintenance CLI and the UI Go-module boundary.

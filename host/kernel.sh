@@ -38,6 +38,13 @@ cd /tmp
 curl -fsSL "$URL" | tar -xJ
 cd "linux-$VERSION"
 curl -fsSL -o .config "$CONFIG_URL"
+# These panic settings changed from bool to int in newer kernels.
+for opt in BOOTPARAM_SOFTLOCKUP_PANIC BOOTPARAM_HUNG_TASK_PANIC; do
+  if grep -A 1 "^config $opt$" lib/Kconfig.debug | grep -q '^[[:space:]]*int ' \
+    && grep -qx "# CONFIG_$opt is not set" .config; then
+    scripts/config --set-val "$opt" 0
+  fi
+done
 make olddefconfig >/dev/null
 for opt in $EXTRAS; do scripts/config --enable "$opt"; done
 make olddefconfig >/dev/null

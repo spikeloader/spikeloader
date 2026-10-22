@@ -25,6 +25,9 @@ spikeloaderd ──HTTPS──▶ Kubernetes API (read-only view, K8S_KUBECONFIG
 The public checkout ships `.env.example`, not `.env` or `.lab/`. Bootstrap copies
 the example to a private local `.env` only when missing; existing configuration is preserved.
 Host scripts report an explicit setup instruction when configuration is absent.
+Before `olddefconfig`, `host/kernel.sh` converts Firecracker's disabled soft-lockup/hung-task panic
+settings to zero only when the target kernel defines them as integers. Older boolean definitions
+and explicitly configured values are preserved.
 `make test` also validates isolated first-run setup, shell syntax and the standalone demo.
 The GitHub Actions workflow runs tests/builds in Arch Linux without starting VMs.
 

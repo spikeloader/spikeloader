@@ -72,6 +72,9 @@ spikeloader with sudo**. It:
    (shown on the Infrastructure page; `make k3s-reset` recreates the cluster);
 6. with `--service`: the panel as a systemd user service.
 
+The kernel builder adapts Firecracker's disabled lockup/hung-task panic settings to numeric zero
+when newer kernels define them as integers; older boolean definitions remain unchanged.
+
 ## Daily use
 
 ```bash
