@@ -52,6 +52,9 @@ make up
 Then run `bin/spikeloader web url` in another terminal and open the generated sign-in link.
 Do not share that link: it contains your access token.
 
+Without a local Kubernetes, run `./bootstrap.sh` (no `--k3s`) and set `K8S_KUBECONFIG=` (empty) in
+`.env` to hide the cluster view, or point it at another cluster's kubeconfig.
+
 For automatic startup, use `./bootstrap.sh --k3s --service` instead of `make up`
 (requires a working systemd user session). The foreground mode does not require systemd.
 Bootstrap creates `.env` from `.env.example` if missing and never overwrites existing settings.

@@ -7,6 +7,9 @@
   Git exclusions for local state/credentials, and clone/setup instructions for the public repository.
 - Initialize missing local configuration during bootstrap without overwriting existing settings;
   avoid printing sign-in tokens in setup output and check npm/make prerequisites.
+- `spikeloader db start` sets the role password from `.lab/pg-password` on every start, so a
+  `spikeloader-pgdata` volume left by an earlier checkout no longer fails with "password
+  authentication failed".
 - Add isolated first-run setup regression checks and demo tests to `make test`, plus an Arch Linux
   GitHub Actions test/build workflow. Ship the demo as source with independent Git setup instructions.
 - Generate Next.js route types before UI checking so `make test` works before the first UI build.

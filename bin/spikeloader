@@ -91,10 +91,22 @@ ensure_db() {
   fi
   local i
   for ((i = 0; i < 60; i++)); do
-    docker exec "$PG_CONTAINER" pg_isready -q -h 127.0.0.1 -U spikeloader -d spikeloader 2>/dev/null && return 0
+    docker exec "$PG_CONTAINER" pg_isready -q -h 127.0.0.1 -U spikeloader -d spikeloader 2>/dev/null && break
     sleep 1
   done
-  die "the database did not become ready (docker logs $PG_CONTAINER)"
+  ((i < 60)) || die "the database did not become ready (docker logs $PG_CONTAINER)"
+  sync_db_password
+}
+
+# POSTGRES_PASSWORD only applies when the volume is first initialised: a volume left by an earlier
+# checkout (or a deleted .lab/) keeps the old password and the daemon fails with "password
+# authentication failed". .lab/pg-password is the source of truth, so set it on the role every time
+# (the socket inside the container uses trust auth, so this needs no password).
+sync_db_password() {
+  printf "ALTER ROLE spikeloader PASSWORD :'pw';\n" |
+    docker exec -i "$PG_CONTAINER" psql -q -v ON_ERROR_STOP=1 -U spikeloader -d spikeloader \
+      -v pw="$(tr -d '\n' <"$PG_PASSWORD_FILE")" >/dev/null ||
+    die "could not set the database password (docker logs $PG_CONTAINER)"
 }
 
 db_cmd() {
