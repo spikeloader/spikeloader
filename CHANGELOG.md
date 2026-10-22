@@ -10,6 +10,8 @@
 - `spikeloader db start` sets the role password from `.lab/pg-password` on every start, so a
   `spikeloader-pgdata` volume left by an earlier checkout no longer fails with "password
   authentication failed".
+- `K8S_KUBECONFIG` is empty in `.env.example`, so setups without k3s no longer show an
+  "unreachable" cluster; `./bootstrap.sh --k3s` fills it in with the local cluster's kubeconfig.
 - Add isolated first-run setup regression checks and demo tests to `make test`, plus an Arch Linux
   GitHub Actions test/build workflow. Ship the demo as source with independent Git setup instructions.
 - Generate Next.js route types before UI checking so `make test` works before the first UI build.

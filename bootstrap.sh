@@ -70,6 +70,12 @@ fi
 if ((k3s)); then
   step "local Kubernetes (k3s) and registry"
   "$ROOT/host/k3s.sh"
+  # show the new cluster on the Infrastructure page, unless .env already names a kubeconfig
+  if grep -qE '^K8S_KUBECONFIG=\s*$' "$ROOT/.env"; then
+    sed -i 's|^K8S_KUBECONFIG=\s*$|K8S_KUBECONFIG=~/.kube/spikeloader-k3s.yaml|' "$ROOT/.env"
+  elif ! grep -q '^K8S_KUBECONFIG=' "$ROOT/.env"; then
+    echo 'K8S_KUBECONFIG=~/.kube/spikeloader-k3s.yaml' >>"$ROOT/.env"
+  fi
 fi
 
 if ((service)); then

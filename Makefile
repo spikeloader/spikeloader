@@ -5,10 +5,10 @@ K3S ?= spikeloader-k3s
 
 # The outer VM and the microVMs are managed by the CI/CD engine (it runs inside the web panel).
 
-bootstrap:     ## self-hosted setup: prerequisites, panel, database, kernel, local k3s + registry
-	@./bootstrap.sh --k3s
+bootstrap:     ## self-hosted setup: prerequisites, panel, database, kernel (k3s: ./bootstrap.sh --k3s)
+	@./bootstrap.sh
 
-up: k3s db     ## bring everything up: test k3s cluster + database + web panel/CI engine (foreground)
+up: k3s db     ## bring everything up: k3s (if set up) + database + web panel/CI engine (foreground)
 	@echo "panel: http://127.0.0.1:4100 — sign-in link: bin/spikeloader web url (not printed: it holds the token)"
 	@bin/spikeloader web start
 

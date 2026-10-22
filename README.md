@@ -45,17 +45,18 @@ git clone https://github.com/spikeloader/spikeloader.git
 cd spikeloader
 cp .env.example .env
 # Review .env resource sizes and ports before setup.
-./bootstrap.sh --k3s
+./bootstrap.sh
 make up
 ```
 
 Then run `bin/spikeloader web url` in another terminal and open the generated sign-in link.
 Do not share that link: it contains your access token.
 
-Without a local Kubernetes, run `./bootstrap.sh` (no `--k3s`) and set `K8S_KUBECONFIG=` (empty) in
-`.env` to hide the cluster view, or point it at another cluster's kubeconfig.
+To test deploys, `./bootstrap.sh --k3s` adds a local Kubernetes and image registry (optional). The
+cluster view stays hidden until `K8S_KUBECONFIG` in `.env` points at a kubeconfig; `--k3s` sets it
+to the local cluster when empty.
 
-For automatic startup, use `./bootstrap.sh --k3s --service` instead of `make up`
+For automatic startup, use `./bootstrap.sh --service` instead of `make up`
 (requires a working systemd user session). The foreground mode does not require systemd.
 Bootstrap creates `.env` from `.env.example` if missing and never overwrites existing settings.
 On Arch Linux, install host tools with `pacman` (`docker`, `nodejs`, `npm`, `git`, `openssh`,
@@ -262,7 +263,7 @@ extend them: **[docs/backend.md](docs/backend.md)**; what comes next: **[docs/ro
 - **A job's microVM never gets SSH**: the job log shows it; `spikeloader vm console <id>` while it runs.
 - **Port in use**: `SPIKELOADER_PORT=4200 spikeloader web start`; outer VM SSH: `SSH_PORT` in `.env`.
 
-To bring everything up (test k3s + database + daemon/panel): `make up`. Development: `make web-dev` (UI hot reload; the daemon is rebuilt from source when it changed) and `make test` (Go tests/vet, UI type check/lint); see [docs/backend.md](docs/backend.md). Version history in [CHANGELOG.md](CHANGELOG.md).
+To bring everything up (k3s if set up + database + daemon/panel): `make up`. Development: `make web-dev` (UI hot reload; the daemon is rebuilt from source when it changed) and `make test` (Go tests/vet, UI type check/lint); see [docs/backend.md](docs/backend.md). Version history in [CHANGELOG.md](CHANGELOG.md).
 
 ## Contributing and license
 
