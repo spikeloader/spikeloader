@@ -12,6 +12,8 @@
 - Generate Next.js route types before UI checking so `make test` works before the first UI build.
 
 ### Maintenance
+- Disable GNU `head` output buffering in the bounded guest log spool so unterminated output
+  streams immediately. Reap detached test runners with an init process in the Arch CI container.
 - Convert disabled boolean panic settings from Firecracker's guest config to numeric zero when
   building newer kernels that define them as integers, avoiding invalid-value Kconfig warnings.
 - Correct the web panel documentation and project map after the Go agent/CLI migration:

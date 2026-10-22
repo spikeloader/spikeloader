@@ -110,7 +110,7 @@ func (s *Server) runTask(ctx context.Context, t *task) {
 	}()
 	// flock makes a repeated start after an interrupted HTTP response idempotent.
 	filter := fmt.Sprintf(`{
-		head -c %d
+		stdbuf -o0 head -c %d
 		tail -c 256 /ci/task.log >/ci/log-prefix
 		dd bs=1 count=1 status=none >/ci/log-overflow
 		if test -s /ci/log-overflow; then

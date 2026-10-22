@@ -29,7 +29,8 @@ Before `olddefconfig`, `host/kernel.sh` converts Firecracker's disabled soft-loc
 settings to zero only when the target kernel defines them as integers. Older boolean definitions
 and explicitly configured values are preserved.
 `make test` also validates isolated first-run setup, shell syntax and the standalone demo.
-The GitHub Actions workflow runs tests/builds in Arch Linux without starting VMs.
+The GitHub Actions workflow runs tests/builds in Arch Linux without starting VMs, with an init
+process to reap detached test runners so `tail --pid` detects their exit.
 
 Environment of the daemon: `SPIKELOADER_HOST`/`SPIKELOADER_PORT` (listen, default 127.0.0.1:4100),
 `SPIKELOADER_UI` (`prod` default = `next start`, `dev` = `next dev`, `off`, or an `http://` URL of a UI
@@ -205,7 +206,8 @@ agent-owned recovery uses the original encrypted snapshot instead.
 
 `CI_MAX_LOG_MB` bounds the rendered log, including its single truncation notice. The raw guest/agent
 spools retain at most the payload budget plus bounded step control records; the detached runner
-continues draining output, preserving its exit status and later step markers.
+continues draining output, preserving its exit status and later step markers. The guest's
+byte-limited `head` runs unbuffered so output without a trailing newline streams immediately.
 
 Errors are `{"error": "message"}` with the status from `ci.Error` (400/401/404/409/502) or 500.
 

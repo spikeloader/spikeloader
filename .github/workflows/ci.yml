@@ -16,7 +16,10 @@ jobs:
   test-build:
     runs-on: ubuntu-latest
     # The runner supplies Docker; all build/test tools execute in Arch Linux.
-    container: archlinux:base-devel
+    container:
+      image: archlinux:base-devel
+      # Reap detached test runners so tail --pid observes their exit, as in the guest.
+      options: --init
     timeout-minutes: 20
     steps:
       - name: Install toolchain

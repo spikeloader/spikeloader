@@ -75,6 +75,8 @@ spikeloader with sudo**. It:
 The kernel builder adapts Firecracker's disabled lockup/hung-task panic settings to numeric zero
 when newer kernels define them as integers; older boolean definitions remain unchanged.
 
+Job logs stream output without waiting for a newline, including through the bounded guest spool.
+
 ## Daily use
 
 ```bash
