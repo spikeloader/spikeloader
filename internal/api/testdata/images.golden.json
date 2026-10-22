@@ -1,0 +1,19 @@
+{
+  "built": [
+    {
+      "name": "base",
+      "size_bytes": 1024,
+      "used_bytes": 512,
+      "built_at": 1
+    }
+  ],
+  "definitions": [
+    {
+      "name": "base",
+      "description": "",
+      "key": null,
+      "from": null,
+      "size": "6G"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="512" y2="512">
+      <stop offset="0" stop-color="#ff8f45"/>
+      <stop offset="1" stop-color="#e2510a"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="116" fill="url(#bg)"/>
+  <!-- anel do loader, aberto no canto superior direito -->
+  <path d="M393.9 251.7A140 140 0 1 1 280.3 138.1" fill="none" stroke="#fff" stroke-width="44" stroke-linecap="round"/>
+  <!-- spike: contido no anel, a ponta escapa pela abertura; o contorno na cor do fundo separa as formas -->
+  <path d="M306 56 150 300h92l-40 156 166-252h-94z" fill="#fff" stroke="url(#bg)" stroke-width="22" stroke-linejoin="round" paint-order="stroke"
+        transform="translate(284 230) rotate(28) scale(0.72) translate(-256 -256)"/>
+</svg>

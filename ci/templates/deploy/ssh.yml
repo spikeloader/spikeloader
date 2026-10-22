@@ -1,0 +1,19 @@
+# Deploys files over SSH with rsync and optionally runs a remote command.
+# Needs the SSH_PRIVATE_KEY secret; host, user and path come from the inputs.
+inputs:
+  host: ""
+  user: deploy
+  port: "22"
+  source: dist/
+  path: ""
+  command: ""
+secrets: [SSH_PRIVATE_KEY]
+steps:
+  - name: rsync
+    run: |
+      : "${INPUT_HOST:?input host is required}" "${INPUT_PATH:?input path is required}"
+      install -d -m 700 ~/.ssh
+      printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+      ssh_cmd="ssh -i ~/.ssh/deploy -p $INPUT_PORT -o StrictHostKeyChecking=accept-new"
+      rsync -az --delete -e "$ssh_cmd" "$INPUT_SOURCE" "$INPUT_USER@$INPUT_HOST:$INPUT_PATH"
+      [ -z "$INPUT_COMMAND" ] || $ssh_cmd "$INPUT_USER@$INPUT_HOST" "$INPUT_COMMAND"

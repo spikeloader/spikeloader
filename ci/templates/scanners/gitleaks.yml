@@ -1,0 +1,13 @@
+# Gitleaks: hardcoded secrets in the code and in the fetched git history.
+image: security
+inputs:
+  exit_code: "1"
+steps:
+  - name: gitleaks
+    run: |
+      mkdir -p reports
+      gitleaks git --redact --no-banner --report-format sarif --report-path reports/gitleaks.sarif \
+        --exit-code "$INPUT_EXIT_CODE" .
+artifacts:
+  paths: [reports/]
+  when: always

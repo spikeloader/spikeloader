@@ -1,0 +1,10 @@
+{
+  "body": {
+    "errors": [
+      "unknown top-level key \"not\"",
+      "`jobs:` must define at least one job"
+    ],
+    "ok": false
+  },
+  "status": 200
+}

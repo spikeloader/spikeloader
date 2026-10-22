@@ -1,0 +1,10 @@
+{
+  "maxJobs": 0,
+  "running": 0,
+  "queued": 0,
+  "outer": "off",
+  "outerOk": false,
+  "capacity": null,
+  "idleShutdownMin": 0,
+  "idleShutdownAt": null
+}

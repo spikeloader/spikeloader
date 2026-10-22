@@ -1,0 +1,36 @@
+# Builds a Docker image and optionally pushes it (push: "true"; REGISTRY_USER/REGISTRY_PASSWORD secrets if the registry needs login).
+image: docker
+vcpus: 2
+mem: 4096
+disk: 20G
+inputs:
+  context: .
+  file: Dockerfile
+  tag: ""
+  push: "false"
+  registry: ""
+  insecure_registry: ""
+  build_args: ""
+steps:
+  - name: docker build
+    run: |
+      # insecure_registry: "host:port" of a plain-HTTP registry (e.g. a local one for tests)
+      if [ -n "$INPUT_INSECURE_REGISTRY" ]; then
+        conf=$(cat /etc/docker/daemon.json 2>/dev/null || echo '{}')
+        jq --arg r "$INPUT_INSECURE_REGISTRY" '."insecure-registries" += [$r]' <<<"$conf" >/etc/docker/daemon.json
+        systemctl restart docker
+      fi
+      tag=${INPUT_TAG:-$CI_PROJECT:$CI_COMMIT_SHORT_SHA}
+      # build_args: comma-separated KEY=VALUE
+      args=()
+      IFS=, read -ra pairs <<<"$INPUT_BUILD_ARGS"
+      for kv in "${pairs[@]}"; do [ -z "$kv" ] || args+=(--build-arg "$kv"); done
+      docker build "${args[@]}" -f "$INPUT_FILE" -t "$tag" "$INPUT_CONTEXT"
+      echo "$tag" > .ci-image-tag
+  - name: docker push
+    run: |
+      [ "$INPUT_PUSH" = true ] || { echo "push disabled"; exit 0; }
+      if [ -n "${REGISTRY_USER:-}" ]; then
+        echo "$REGISTRY_PASSWORD" | docker login ${INPUT_REGISTRY:+"$INPUT_REGISTRY"} -u "$REGISTRY_USER" --password-stdin
+      fi
+      docker push "$(cat .ci-image-tag)"

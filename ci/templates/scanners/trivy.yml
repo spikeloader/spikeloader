@@ -1,0 +1,19 @@
+# Trivy: vulnerabilities in dependencies, IaC misconfigurations and secrets in the repository.
+image: security
+inputs:
+  severity: HIGH,CRITICAL
+  scanners: vuln,misconfig,secret
+  exit_code: "1"
+steps:
+  - name: trivy report (SARIF)
+    run: |
+      mkdir -p reports
+      trivy fs --quiet --cache-dir /var/cache/trivy --scanners "$INPUT_SCANNERS" \
+        --format sarif --output reports/trivy.sarif .
+  - name: trivy fs
+    run: |
+      trivy fs --quiet --cache-dir /var/cache/trivy --skip-db-update --scanners "$INPUT_SCANNERS" \
+        --severity "$INPUT_SEVERITY" --exit-code "$INPUT_EXIT_CODE" .
+artifacts:
+  paths: [reports/]
+  when: always

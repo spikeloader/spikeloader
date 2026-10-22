@@ -1,0 +1,359 @@
+#!/usr/bin/env bash
+# fcctl — manages Firecracker microVMs inside the outer VM (run as root).
+#
+# Each microVM N gets:
+#   - its own (sparse) copy of the rootfs in /var/lib/fclab/vms/vmN/
+#   - a TAP fc-tapN with a routed /30: host 172.16.x.(4N+1), guest 172.16.x.(4N+2)
+#   - MAC 06:00:<guest ip> (the guest's fcnet-setup.sh derives its IP from it)
+set -euo pipefail
+
+LAB=/var/lib/fclab
+source "$LAB/.env"
+KEY=$LAB/id_ed25519
+
+usage() {
+  cat <<EOF
+usage: fcctl <command> [args]
+  up N [vcpus] [mem_mib]   create/start vm1..vmN
+  add K [vcpus] [mem_mib]  create K microVMs on the next free ids
+  create I [vcpus] [mem] [image] [disk]
+                           create/start vmI (image from images/, disk grown to e.g. 10G)
+  spawn [vcpus] [mem] [image] [disk] [label]
+                           create a CI microVM on the next free id, wait for SSH, print "id N"
+  image-build KEY [FROM] [SIZE] < script
+                           build images/KEY.ext4 by running the script as root on FROM (default: base)
+  follow I cmd...          run cmd detached in vmI (survives sshd restarts), stream its output, exit with its status
+  images                   list built images as JSON
+  image-rm KEY             delete an image
+  start I | restart I      start/restart vmI with its existing config
+  ls                       list microVMs
+  json                     microVM state as JSON (used by the frontend)
+  host-info                outer VM resources as JSON
+  status                   host-info + json in a single document
+  ssh I [cmd...]           SSH as root into vmI
+  console I [lines]        show vmI's serial console (log)
+  pause I | resume I       pause/resume vmI (Firecracker API)
+  api I [path]             GET on vmI's Firecracker API (default /vm/config)
+  stop I                   stop vmI (keeps the disk)
+  stop-all                 stop all (keeps the disks)
+  rm I                     stop and delete vmI
+  down                     stop and delete all
+EOF
+}
+
+# address = 172.16.0.0 + 4*I + off  (off=1 host/TAP, off=2 guest)
+addr() {
+  local n=$(( (172 << 24 | 16 << 16) + 4 * $1 + $2 ))
+  printf '%d.%d.%d.%d' $((n >> 24 & 255)) $((n >> 16 & 255)) $((n >> 8 & 255)) $((n & 255))
+}
+mac() { IFS=. read -r a b c d <<<"$(addr "$1" 2)"; printf '06:00:%02x:%02x:%02x:%02x' "$a" "$b" "$c" "$d"; }
+vmdir() { echo "$LAB/vms/vm$1"; }
+tap() { echo "fc-tap$1"; }
+
+running() { local p; p=$(vmdir "$1")/pid; [[ -f $p ]] && kill -0 "$(cat "$p")" 2>/dev/null; }
+
+# running | paused | stopped (pause is only visible through the Firecracker API)
+vm_state() {
+  running "$1" || { echo stopped; return; }
+  [[ $(curl -s -m 1 --unix-socket "$(vmdir "$1")/fc.sock" http://localhost/ | jq -r .state 2>/dev/null) == Paused ]] && echo paused || echo running
+}
+
+valid_image() { [[ $1 =~ ^[a-z0-9][a-z0-9._-]*$ ]] || { echo "invalid image name: $1" >&2; exit 1; }; }
+
+# grows a filesystem image to SIZE (e.g. 10G); never shrinks
+grow() {
+  local f=$1 size=$2 want
+  [[ $size =~ ^[0-9]+[MG]$ ]] || { echo "invalid disk size: $size" >&2; exit 1; }
+  want=$(numfmt --from=iec "$size")
+  (( want > $(stat -c %s "$f") )) || return 0
+  truncate -s "$size" "$f"
+  e2fsck -fy "$f" >/dev/null 2>&1 || true
+  resize2fs -f "$f" >/dev/null 2>&1
+}
+
+# reserves K free ids (creates their directories under a lock, so parallel callers never collide)
+reserve_ids() {
+  local k=$1 ids
+  exec 9>"$LAB/.ids.lock"
+  flock 9
+  ids=$(free_ids "$k")
+  for i in $ids; do mkdir -p "$(vmdir "$i")"; done
+  flock -u 9
+  echo "$ids"
+}
+
+check_id() { [[ ${1:-} =~ ^[0-9]+$ ]] && (( $1 >= 1 && $1 <= 16000 )) || { echo "invalid id: ${1:-}" >&2; exit 1; }; }
+
+setup_tap() {
+  local t; t=$(tap "$1")
+  ip link show "$t" >/dev/null 2>&1 && ip link del "$t"
+  ip tuntap add dev "$t" mode tap
+  ip addr add "$(addr "$1" 1)/30" dev "$t"
+  # GRO on the TAP collapses guest TCP throughput under nested virtualization (~80 KB/s instead of line rate)
+  ethtool -K "$t" gro off >/dev/null 2>&1 || true
+  ip link set "$t" up
+}
+
+create() {
+  local i=$1 vcpus=${2:-$VM_VCPUS} mem=${3:-$VM_MEM_MIB} image=${4:-} disk=${5:-} d src=$LAB/base-rootfs.ext4
+  check_id "$i"
+  d=$(vmdir "$i")
+  if running "$i"; then echo "vm$i is already running"; return; fi
+  [[ $vcpus =~ ^[0-9]+$ && $mem =~ ^[0-9]+$ ]] || { echo "invalid vcpus/mem" >&2; exit 1; }
+  if [[ -f $d/config.json ]]; then start "$i"; return; fi
+  if [[ -n $image && $image != base ]]; then
+    valid_image "$image"
+    src=$LAB/images/$image.ext4
+    [[ -f $src ]] || { echo "image not found: $image" >&2; exit 1; }
+  fi
+  mkdir -p "$d"
+  cp --sparse=always "$src" "$d/rootfs.ext4"
+  [[ -z $disk ]] || grow "$d/rootfs.ext4" "$disk"
+  cat >"$d/config.json" <<EOF
+{
+  "boot-source": {
+    "kernel_image_path": "$LAB/vmlinux",
+    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off fclab.hostname=vm$i"
+  },
+  "drives": [
+    { "drive_id": "rootfs", "path_on_host": "$d/rootfs.ext4",
+      "is_root_device": true, "is_read_only": false }
+  ],
+  "network-interfaces": [
+    { "iface_id": "eth0", "guest_mac": "$(mac "$i")", "host_dev_name": "$(tap "$i")" }
+  ],
+  "machine-config": { "vcpu_count": $vcpus, "mem_size_mib": $mem }
+}
+EOF
+  launch "$i"
+}
+
+launch() {
+  local i=$1 d
+  d=$(vmdir "$i")
+  setup_tap "$i"
+  rm -f "$d/fc.sock"
+  # console.log only gets the guest's serial output; the VMM log goes to firecracker.log
+  : >"$d/firecracker.log"
+  setsid firecracker --api-sock "$d/fc.sock" --config-file "$d/config.json" \
+    --log-path "$d/firecracker.log" --level Info \
+    </dev/null >"$d/console.log" 2>&1 &
+  echo $! >"$d/pid"
+  echo "vm$i started: ip $(addr "$i" 2), $(jq -r '."machine-config" | "\(.vcpu_count) vCPU, \(.mem_size_mib) MiB"' "$d/config.json")"
+}
+
+start() {
+  local i=$1
+  check_id "$i"
+  [[ -f $(vmdir "$i")/config.json ]] || { echo "vm$i does not exist" >&2; exit 1; }
+  if running "$i"; then echo "vm$i is already running"; return; fi
+  launch "$i"
+}
+
+stop() {
+  local i=$1 d
+  check_id "$i"
+  d=$(vmdir "$i")
+  if running "$i"; then
+    # clean shutdown: with reboot=k, Ctrl+Alt+Del makes the guest reboot and Firecracker exits
+    if [[ $(curl -s -m 1 --unix-socket "$d/fc.sock" http://localhost/ | jq -r .state 2>/dev/null) == Running ]]; then
+      curl -s -m 2 --unix-socket "$d/fc.sock" -X PUT -H 'Content-Type: application/json' \
+        -d '{"action_type":"SendCtrlAltDel"}' http://localhost/actions >/dev/null || true
+      for _ in $(seq 100); do running "$i" || break; sleep 0.1; done
+    fi
+    if running "$i"; then
+      kill "$(cat "$d/pid")"
+      for _ in $(seq 20); do running "$i" || break; sleep 0.1; done
+      running "$i" && kill -9 "$(cat "$d/pid")"
+    fi
+  fi
+  rm -f "$d/pid" "$d/fc.sock"
+  ip link del "$(tap "$i")" 2>/dev/null || true
+}
+
+ids() { ls "$LAB/vms" 2>/dev/null | sed -n 's/^vm\([0-9]\+\)$/\1/p' | sort -n; }
+
+free_ids() {
+  local k=$1 i=1 out=()
+  while (( ${#out[@]} < k )); do
+    [[ -d $(vmdir "$i") ]] || out+=("$i")
+    i=$((i + 1))
+  done
+  echo "${out[@]}"
+}
+
+json_vm() {
+  local i=$1 d st=stopped pid=null rss=0 cpu=0 up=0 meta
+  d=$(vmdir "$i")
+  meta=$(cat "$d/meta.json" 2>/dev/null || echo '{}')
+  st=$(vm_state "$i")
+  if [[ $st != stopped ]]; then
+    pid=$(cat "$d/pid")
+    read -r rss cpu up < <(ps -o rss=,%cpu=,etimes= -p "$pid")
+  fi
+  jq -n --argjson id "$i" --arg state "$st" --argjson pid "$pid" \
+    --arg ip "$(addr "$i" 2)" --arg tap_ip "$(addr "$i" 1)" --arg mac "$(mac "$i")" --arg tap "$(tap "$i")" \
+    --argjson rss "$rss" --argjson cpu "$cpu" --argjson up "$up" \
+    --argjson used "$(du -B1 "$d/rootfs.ext4" 2>/dev/null | cut -f1 || echo 0)" \
+    --argjson size "$(stat -c %s "$d/rootfs.ext4" 2>/dev/null || echo 0)" \
+    --slurpfile cfg "$d/config.json" --argjson meta "$meta" \
+    '{id: $id, name: "vm\($id)", state: $state, pid: $pid, ip: $ip, tap: $tap, tap_ip: $tap_ip, mac: $mac,
+      vcpus: $cfg[0]."machine-config".vcpu_count, mem_mib: $cfg[0]."machine-config".mem_size_mib,
+      rss_kb: $rss, cpu_pct: $cpu, uptime_s: $up, disk_used_bytes: $used, disk_size_bytes: $size,
+      boot_args: $cfg[0]."boot-source".boot_args, owner: ($meta.owner // null), label: ($meta.label // null)}'
+}
+
+host_info() {
+  local mt ma dt da
+  mt=$(awk '/^MemTotal/ {print $2}' /proc/meminfo)
+  ma=$(awk '/^MemAvailable/ {print $2}' /proc/meminfo)
+  read -r dt da < <(df -B1 --output=size,avail "$LAB" | tail -1)
+  jq -n --arg hostname "$(</proc/sys/kernel/hostname)" --arg kernel "$(uname -r)" \
+    --arg firecracker "$(firecracker --version | head -1)" --argjson cpus "$(nproc)" \
+    --argjson mem_total_kb "$mt" --argjson mem_avail_kb "$ma" \
+    --argjson disk_total "$dt" --argjson disk_avail "$da" \
+    --arg load "$(cut -d' ' -f1-3 /proc/loadavg)" --argjson uptime_s "$(cut -d. -f1 /proc/uptime)" \
+    --argjson vcpus "$VM_VCPUS" --argjson mem "$VM_MEM_MIB" \
+    --arg kernel_image "$GUEST_KERNEL" --arg rootfs "$GUEST_ROOTFS" \
+    '{hostname: $hostname, kernel: $kernel, firecracker: $firecracker, cpus: $cpus,
+      mem_total_kb: $mem_total_kb, mem_avail_kb: $mem_avail_kb,
+      disk_total_bytes: $disk_total, disk_avail_bytes: $disk_avail,
+      load: ($load | split(" ") | map(tonumber)), uptime_s: $uptime_s,
+      guest_kernel: $kernel_image, guest_rootfs: $rootfs,
+      defaults: {vcpus: $vcpus, mem_mib: $mem}}'
+}
+
+wait_ssh() {
+  local ip; ip=$(addr "$1" 2)
+  for _ in $(seq 60); do
+    ssh_vm "$1" true 2>/dev/null && return 0
+    sleep 1
+  done
+  echo "vm$1 ($ip): SSH did not respond; see 'fcctl console $1'" >&2
+  return 1
+}
+
+fc_api() {
+  local i=$1 method=$2 path=$3 body=${4:-}
+  check_id "$i"
+  running "$i" || { echo "vm$i is not running" >&2; exit 1; }
+  curl -sS --fail-with-body --unix-socket "$(vmdir "$i")/fc.sock" -X "$method" \
+    -H 'Content-Type: application/json' ${body:+-d "$body"} "http://localhost$path"
+}
+
+# Runs a command detached inside the guest and streams its output by polling, so that it survives
+# the SSH session dying (e.g. a package upgrade restarting sshd). Exits with the command's status.
+follow_vm() {
+  local i=$1 cmd=$2 tag off=0 rc="" tmp
+  tag=/run/fcctl-follow-$$-$RANDOM
+  tmp=$(mktemp -d)
+  ssh_vm "$i" "mkdir -p $tag && (setsid bash -c $(printf %q "($cmd); echo \$? >$tag/rc") >$tag/out 2>&1 </dev/null &)" || { rm -rf "$tmp"; return 255; }
+  while :; do
+    if ssh_vm "$i" "tail -c +$((off + 1)) $tag/out 2>/dev/null; [ ! -f $tag/rc ] || cat $tag/rc >&2" >"$tmp/chunk" 2>"$tmp/rc"; then
+      cat "$tmp/chunk"
+      off=$((off + $(stat -c %s "$tmp/chunk")))
+      rc=$(tr -dc 0-9 <"$tmp/rc")
+      if [[ -n $rc ]]; then
+        ssh_vm "$i" "tail -c +$((off + 1)) $tag/out; rm -rf $tag" 2>/dev/null || true
+        break
+      fi
+    elif ! running "$i"; then
+      echo "vm$i stopped" >&2; rc=255; break
+    fi
+    sleep 1
+  done
+  rm -rf "$tmp"
+  return "$rc"
+}
+
+ssh_vm() {
+  local i=$1; shift
+  ssh -i "$KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      -o LogLevel=ERROR -o ConnectTimeout=3 "root@$(addr "$i" 2)" "$@"
+}
+
+cmd=${1:-}; shift || true
+case $cmd in
+  up)
+    n=${1:?missing N}; shift
+    for i in $(seq "$n"); do create "$i" "$@"; done
+    for i in $(seq "$n"); do wait_ssh "$i" && echo "vm$i ready (ssh ok)"; done
+    ;;
+  add)
+    k=${1:?missing K}; shift
+    [[ $k =~ ^[0-9]+$ ]] || { echo "invalid K" >&2; exit 1; }
+    new=$(reserve_ids "$k")
+    for i in $new; do create "$i" "$@"; done
+    for i in $new; do wait_ssh "$i" && echo "vm$i ready (ssh ok)"; done
+    ;;
+  create) create "$@"; wait_ssh "$1" ;;
+  spawn)
+    i=$(reserve_ids 1)
+    [[ -z ${5:-} ]] || jq -n --arg label "$5" '{owner: "ci", label: $label}' >"$(vmdir "$i")/meta.json"
+    if ! { create "$i" "${1:-}" "${2:-}" "${3:-}" "${4:-}" >&2 && wait_ssh "$i"; }; then
+      stop "$i"; rm -rf "$(vmdir "$i")"; exit 1
+    fi
+    echo "id $i"
+    ;;
+  image-build)
+    key=${1:?missing KEY}; from=${2:-base}; size=${3:-8G}
+    valid_image "$key"
+    out=$LAB/images/$key.ext4
+    if [[ -f $out ]]; then echo "image $key already exists"; exit 0; fi
+    mkdir -p "$LAB/images"
+    script=$(mktemp)
+    cat >"$script"
+    i=$(reserve_ids 1)
+    jq -n --arg label "image build: $key" '{owner: "ci", label: $label}' >"$(vmdir "$i")/meta.json"
+    trap 'stop "$i"; rm -rf "$(vmdir "$i")" "$script"' EXIT
+    create "$i" 2 2048 "$from" "$size"
+    wait_ssh "$i"
+    ssh_vm "$i" 'cat >/root/image-build.sh' <"$script"
+    follow_vm "$i" 'bash -euo pipefail /root/image-build.sh'
+    ssh_vm "$i" 'rm -f /root/image-build.sh'
+    ssh_vm "$i" 'rm -rf /var/cache/pacman/pkg/* /tmp/*; sync' || true
+    stop "$i"
+    mv "$(vmdir "$i")/rootfs.ext4" "$out.tmp"
+    mv "$out.tmp" "$out"
+    echo "image $key built"
+    ;;
+  images)
+    for f in "$LAB"/images/*.ext4; do
+      [[ -f $f ]] || continue
+      jq -n --arg name "$(basename "$f" .ext4)" --argjson size "$(stat -c %s "$f")" \
+        --argjson used "$(du -B1 "$f" | cut -f1)" --argjson mtime "$(stat -c %Y "$f")" \
+        '{name: $name, size_bytes: $size, used_bytes: $used, built_at: $mtime}'
+    done | jq -s .
+    ;;
+  image-rm) valid_image "${1:?}"; rm -f "$LAB/images/$1.ext4"; echo "image $1 removed" ;;
+  start) start "${1:?}"; wait_ssh "$1" ;;
+  restart) stop "${1:?}"; start "$1"; wait_ssh "$1" ;;
+  json) for i in $(ids); do json_vm "$i"; done | jq -s . ;;
+  host-info) host_info ;;
+  status) host_info | jq --argjson vms "$(for i in $(ids); do json_vm "$i"; done | jq -s .)" '{host: ., vms: $vms}' ;;
+  pause) fc_api "${1:-}" PATCH /vm '{"state":"Paused"}' && echo "vm$1 paused" ;;
+  resume) fc_api "${1:-}" PATCH /vm '{"state":"Resumed"}' && echo "vm$1 resumed" ;;
+  api)
+    path=${2:-/vm/config}
+    [[ $path =~ ^/[a-z/_-]*$ ]] || { echo "invalid path" >&2; exit 1; }
+    fc_api "${1:-}" GET "$path"
+    ;;
+  ls)
+    printf '%-6s %-8s %-15s %-10s %s\n' NAME STATE IP PID "VCPU/MEM"
+    for i in $(ids); do
+      d=$(vmdir "$i")
+      st=$(vm_state "$i")
+      if [[ $st != stopped ]]; then pid=$(cat "$d/pid"); else pid=-; fi
+      res=$(jq -r '"\(."machine-config".vcpu_count)/\(."machine-config".mem_size_mib)MiB"' "$d/config.json" 2>/dev/null || echo ?)
+      printf '%-6s %-8s %-15s %-10s %s\n' "vm$i" "$st" "$(addr "$i" 2)" "$pid" "$res"
+    done
+    ;;
+  ssh) check_id "${1:-}"; ssh_vm "$@" ;;
+  follow) check_id "${1:-}"; i=$1; shift; follow_vm "$i" "$*" ;;
+  console) check_id "${1:-}"; tail -n "${2:-+1}" "$(vmdir "$1")/console.log" ;;
+  stop) stop "${1:?}"; echo "vm$1 stopped" ;;
+  stop-all) for i in $(ids); do stop "$i"; done; echo "all microVMs stopped" ;;
+  rm) stop "${1:?}"; rm -rf "$(vmdir "$1")"; echo "vm$1 removed" ;;
+  down) for i in $(ids); do stop "$i"; rm -rf "$(vmdir "$i")"; done; echo "all microVMs removed" ;;
+  *) usage; [[ -z $cmd || $cmd == help || $cmd == -h ]] || exit 1 ;;
+esac

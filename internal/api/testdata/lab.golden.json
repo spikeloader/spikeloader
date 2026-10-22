@@ -1,0 +1,55 @@
+{
+  "version": "test",
+  "config": {},
+  "outer": {
+    "running": false,
+    "backend": null,
+    "reachable": false,
+    "provisioned": false
+  },
+  "host": {
+    "hostname": "outer",
+    "kernel": "",
+    "firecracker": "",
+    "cpus": 0,
+    "mem_total_kb": 0,
+    "mem_avail_kb": 0,
+    "disk_total_bytes": 0,
+    "disk_avail_bytes": 0,
+    "load": [
+      0,
+      0,
+      0
+    ],
+    "uptime_s": 0,
+    "guest_kernel": "",
+    "guest_rootfs": "",
+    "defaults": {
+      "vcpus": 1,
+      "mem_mib": 256
+    }
+  },
+  "vms": [
+    {
+      "id": 1,
+      "name": "vm1",
+      "state": "stopped",
+      "pid": null,
+      "ip": "",
+      "tap": "",
+      "tap_ip": "",
+      "mac": "",
+      "vcpus": 0,
+      "mem_mib": 0,
+      "rss_kb": 0,
+      "cpu_pct": 0,
+      "uptime_s": 0,
+      "disk_used_bytes": 0,
+      "disk_size_bytes": 0,
+      "boot_args": "",
+      "owner": null,
+      "label": null
+    }
+  ],
+  "error": null
+}

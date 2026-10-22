@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-build:
+    runs-on: ubuntu-latest
+    # The runner supplies Docker; all build/test tools execute in Arch Linux.
+    container: archlinux:base-devel
+    timeout-minutes: 20
+    steps:
+      - name: Install toolchain
+        run: pacman -Syu --noconfirm --needed git go nodejs npm openssh curl
+      - uses: actions/checkout@v4
+      - name: Configure local defaults
+        run: cp .env.example .env
+      - name: Install UI dependencies
+        working-directory: web
+        run: npm ci --no-audit --no-fund
+      - name: Test
+        # bootstrap refuses root; run its isolated smoke test as an unprivileged user.
+        run: |
+          useradd --create-home builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          runuser -u builder -- make test
+      - name: Build daemon, CLI, agent and UI
+        run: runuser -u builder -- make build

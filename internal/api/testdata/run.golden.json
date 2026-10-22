@@ -1,0 +1,84 @@
+{
+  "id": 1,
+  "project": "demo",
+  "branch": "main",
+  "sha": "abcdef1234",
+  "message": "",
+  "author": "",
+  "event": "manual",
+  "sourceRef": "refs/heads/main",
+  "status": "queued",
+  "error": null,
+  "createdAt": 0,
+  "startedAt": null,
+  "endedAt": null,
+  "canceled": false,
+  "variables": {},
+  "stages": [
+    "test"
+  ],
+  "jobs": [
+    {
+      "idx": 0,
+      "name": "hello",
+      "stage": "test",
+      "image": "base",
+      "deps": [],
+      "status": "queued",
+      "reason": null,
+      "manual": false,
+      "allowFailure": false,
+      "attempt": 0,
+      "exitCode": null,
+      "vm": null,
+      "queuedAt": null,
+      "startedAt": null,
+      "endedAt": null,
+      "approvedBy": null,
+      "hasArtifacts": false,
+      "steps": [
+        {
+          "name": "echo hello",
+          "phase": "main",
+          "status": "pending",
+          "startedAt": null,
+          "endedAt": null,
+          "exitCode": null
+        }
+      ],
+      "spec": {
+        "base": "hello",
+        "name": "hello",
+        "stage": "test",
+        "image": "base",
+        "vcpus": 2,
+        "mem": 2048,
+        "disk": "10G",
+        "timeoutS": 3600,
+        "needs": null,
+        "matrix": {},
+        "variables": {},
+        "secrets": [],
+        "before": [],
+        "steps": [
+          {
+            "name": "echo hello",
+            "run": "echo hello"
+          }
+        ],
+        "after": [],
+        "artifacts": null,
+        "cache": [],
+        "when": {
+          "branches": null,
+          "events": null,
+          "status": "success"
+        },
+        "manual": false,
+        "allowFailure": false,
+        "retry": 0,
+        "depth": 50
+      }
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+# Validates Kubernetes manifests, kustomizations and Helm charts against the API schemas (no cluster needed).
+image: kube
+inputs:
+  path: k8s/
+  kubernetes_version: ""
+  charts: ""
+steps:
+  - name: kubeconform
+    run: |
+      args=(-strict -summary -ignore-missing-schemas)
+      [ -z "$INPUT_KUBERNETES_VERSION" ] || args+=(-kubernetes-version "$INPUT_KUBERNETES_VERSION")
+      if [ -f "$INPUT_PATH/kustomization.yaml" ] || [ -f "$INPUT_PATH/kustomization.yml" ]; then
+        kubectl kustomize "$INPUT_PATH" | kubeconform "${args[@]}" -
+      elif [ -e "$INPUT_PATH" ]; then
+        kubeconform "${args[@]}" "$INPUT_PATH"
+      else
+        echo "no manifests at $INPUT_PATH"
+      fi
+  - name: helm lint
+    run: |
+      # charts: comma-separated chart directories
+      IFS=, read -ra charts <<<"$INPUT_CHARTS"
+      for c in "${charts[@]}"; do
+        [ -n "$c" ] || continue
+        helm lint "$c"
+        helm template ci "$c" | kubeconform -strict -summary -ignore-missing-schemas -
+      done

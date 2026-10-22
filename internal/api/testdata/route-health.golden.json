@@ -1,0 +1,10 @@
+{
+  "body": {
+    "backend": "go",
+    "ok": true,
+    "service": "spikeloader",
+    "uptime_s": 0,
+    "version": "test"
+  },
+  "status": 200
+}

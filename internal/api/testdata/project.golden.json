@@ -1,0 +1,19 @@
+{
+  "id": "demo",
+  "name": "Demo",
+  "url": "file:///demo",
+  "defaultBranch": "main",
+  "protectedBranches": [
+    "main",
+    "release/*"
+  ],
+  "pollS": 0,
+  "notifyUrl": "",
+  "notifyOn": "failure",
+  "createdAt": 0,
+  "refs": {},
+  "lastSyncAt": null,
+  "lastError": null,
+  "scheduleFired": {},
+  "lastRun": null
+}

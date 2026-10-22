@@ -1,0 +1,12 @@
+/.lab/
+/.env
+/.env.*
+!/.env.example
+*.log
+*.key
+*.pem
+*.kubeconfig
+/backup*.sql
+/coverage.out
+# The example is shipped as source, not as an embedded repository.
+/examples/k3s-demo/.git/

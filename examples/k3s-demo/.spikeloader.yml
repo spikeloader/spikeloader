@@ -1,0 +1,35 @@
+stages: [test, image, deploy]
+
+variables:
+  REGISTRY: "172.17.0.1:5000"
+  APP_NAMESPACE: spikeloader-demo
+
+jobs:
+  test:
+    stage: test
+    image: go
+    steps:
+      - go test ./...
+      - 'mkdir -p bin; CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.revision=$CI_COMMIT_SHORT_SHA" -o bin/demo .'
+    artifacts:
+      paths: [bin/demo]
+
+  image:
+    stage: image
+    uses: docker/build
+    with:
+      tag: "$REGISTRY/spikeloader-demo:$CI_COMMIT_SHORT_SHA"
+      push: "true"
+      insecure_registry: "$REGISTRY"
+
+  deploy:
+    stage: deploy
+    when:
+      branches: [main]
+    uses: deploy/kubectl
+    with:
+      namespace: "$APP_NAMESPACE"
+      path: k8s/
+      images: "spikeloader-demo=$REGISTRY/spikeloader-demo:$CI_COMMIT_SHORT_SHA"
+      create_namespace: "false"
+      timeout: 3m

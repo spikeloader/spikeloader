@@ -1,0 +1,12 @@
+# Semgrep: static analysis (SAST) with the community rule sets.
+image: security
+inputs:
+  config: p/default
+steps:
+  - name: semgrep
+    run: |
+      mkdir -p reports
+      semgrep scan --metrics=off --config "$INPUT_CONFIG" --error --sarif-output reports/semgrep.sarif .
+artifacts:
+  paths: [reports/]
+  when: always

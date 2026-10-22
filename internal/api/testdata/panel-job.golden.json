@@ -1,0 +1,11 @@
+{
+  "id": "test",
+  "title": "operation",
+  "command": "host/up.sh",
+  "status": "running",
+  "exitCode": null,
+  "output": "",
+  "startedAt": 0,
+  "endedAt": null,
+  "group": "outer"
+}

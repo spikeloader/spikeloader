@@ -1,0 +1,10 @@
+{
+  "data": {
+    "machine-config": {
+      "vcpu_count": 1
+    }
+  },
+  "error": null,
+  "ok": true,
+  "path": "/vm/config"
+}

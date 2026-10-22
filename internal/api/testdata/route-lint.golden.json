@@ -1,0 +1,31 @@
+{
+  "body": {
+    "errors": [],
+    "jobs": [
+      {
+        "image": "base",
+        "manual": false,
+        "name": "hello",
+        "needs": [],
+        "secrets": [],
+        "stage": "test",
+        "steps": [
+          "echo hello"
+        ]
+      }
+    ],
+    "ok": true,
+    "on": {
+      "enabled": {
+        "push": true
+      },
+      "manual": true,
+      "push": null,
+      "schedule": []
+    },
+    "stages": [
+      "test"
+    ]
+  },
+  "status": 200
+}

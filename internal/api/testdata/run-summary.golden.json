@@ -1,0 +1,27 @@
+{
+  "id": 1,
+  "project": "demo",
+  "branch": "main",
+  "sha": "abcdef1234",
+  "message": "",
+  "author": "",
+  "event": "manual",
+  "sourceRef": "refs/heads/main",
+  "status": "queued",
+  "error": null,
+  "createdAt": 0,
+  "startedAt": null,
+  "endedAt": null,
+  "canceled": false,
+  "stages": [
+    "test"
+  ],
+  "jobs": [
+    {
+      "idx": 0,
+      "name": "hello",
+      "stage": "test",
+      "status": "queued"
+    }
+  ]
+}

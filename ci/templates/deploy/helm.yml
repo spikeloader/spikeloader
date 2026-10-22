@@ -1,0 +1,37 @@
+# Installs or upgrades a Helm release (rolled back automatically if it does not become ready).
+# Needs the KUBECONFIG_DATA secret (kubeconfig as YAML or base64; see docs/ci.md#kubernetes).
+image: kube
+inputs:
+  release: ""
+  chart: ""
+  namespace: default
+  context: ""
+  values: ""
+  set: ""
+  version: ""
+  repo: ""
+  timeout: 5m
+  diagnose: "true"
+secrets: [KUBECONFIG_DATA]
+steps:
+  - name: connect to the cluster
+    run: kube-login "$INPUT_CONTEXT"
+  - name: helm upgrade --install
+    run: |
+      : "${INPUT_RELEASE:?input release is required}" "${INPUT_CHART:?input chart is required (path in the repo, repo/chart or oci://…)}"
+      args=(upgrade --install "$INPUT_RELEASE" "$INPUT_CHART" --namespace "$INPUT_NAMESPACE"
+            --atomic --wait --timeout "$INPUT_TIMEOUT" --history-max 10)
+      # namespace-scoped credentials cannot create namespaces
+      [ "$(kubectl auth can-i create namespaces 2>/dev/null)" != yes ] || args+=(--create-namespace)
+      # repo: "name=https://charts.example.com" makes "name/chart" usable
+      if [ -n "$INPUT_REPO" ]; then helm repo add "${INPUT_REPO%%=*}" "${INPUT_REPO#*=}" >/dev/null && helm repo update >/dev/null; fi
+      [ -d "$INPUT_CHART" ] && helm dependency build "$INPUT_CHART" >/dev/null 2>&1 || true
+      [ -z "$INPUT_VERSION" ] || args+=(--version "$INPUT_VERSION")
+      # values: comma-separated files; set: comma-separated key=value (Helm --set syntax)
+      IFS=, read -ra files <<<"$INPUT_VALUES"
+      for f in "${files[@]}"; do [ -z "$f" ] || args+=(-f "$f"); done
+      [ -z "$INPUT_SET" ] || args+=(--set "$INPUT_SET")
+      if ! helm "${args[@]}"; then
+        [ "$INPUT_DIAGNOSE" != true ] || kube-diagnose "$INPUT_NAMESPACE"
+        exit 1
+      fi

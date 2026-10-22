@@ -1,0 +1,70 @@
+@import "tailwindcss";
+@import "@xterm/xterm/css/xterm.css";
+
+:root {
+  --bg: #f6f6f4;
+  --surface: #ffffff;
+  --surface-2: #f0efec;
+  --border: #e3e1dc;
+  --fg: #1c1b19;
+  --muted: #6b6862;
+  --accent: #e8590c;
+  --accent-fg: #ffffff;
+  --ok: #2b8a3e;
+  --warn: #b7791f;
+  --danger: #c92a2a;
+  --danger-fg: #ffffff;
+  --term-bg: #16151a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f0f11;
+    --surface: #17171a;
+    --surface-2: #1f1f23;
+    --border: #2a2a2f;
+    --fg: #ececee;
+    --muted: #8e8d96;
+    --accent: #ff7a2f;
+    --accent-fg: #1a0d05;
+    --ok: #51cf66;
+    --warn: #fcc419;
+    --danger: #ff6b6b;
+    --danger-fg: #1f0707;
+    --term-bg: #0b0b0d;
+  }
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+  --color-danger-fg: var(--danger-fg);
+  --color-term: var(--term-bg);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.xterm .xterm-viewport {
+  background-color: transparent !important;
+}
+
+@keyframes confirm-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}

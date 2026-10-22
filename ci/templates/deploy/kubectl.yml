@@ -1,0 +1,71 @@
+# Applies Kubernetes manifests (or a kustomization), optionally sets the image and waits for the rollout.
+# Needs the KUBECONFIG_DATA secret (kubeconfig as YAML or base64; see docs/ci.md#kubernetes).
+image: kube
+inputs:
+  path: k8s/
+  namespace: default
+  context: ""
+  images: ""
+  timeout: 5m
+  create_namespace: "true"
+  diagnose: "true"
+  rollback: "true"
+secrets: [KUBECONFIG_DATA]
+steps:
+  - name: connect to the cluster
+    run: kube-login "$INPUT_CONTEXT"
+  - name: kubectl apply
+    run: |
+      ns=$INPUT_NAMESPACE
+      # namespace-scoped credentials (spikeloader's deployer account) cannot see namespaces: skip then
+      if [ "$INPUT_CREATE_NAMESPACE" = true ] && [ "$(kubectl auth can-i create namespaces 2>/dev/null)" = yes ] && ! kubectl get namespace "$ns" >/dev/null 2>&1; then
+        kubectl create namespace "$ns"
+      fi
+      # wrap the manifests in a generated kustomization so images are replaced before anything is applied
+      rm -rf .ci-kustomize && mkdir .ci-kustomize
+      if [ -f "$INPUT_PATH/kustomization.yaml" ] || [ -f "$INPUT_PATH/kustomization.yml" ]; then
+        printf 'resources: [%s]\n' "$(realpath --relative-to=.ci-kustomize "$INPUT_PATH")" >.ci-kustomize/kustomization.yaml
+      else
+        find "$INPUT_PATH" -type f \( -name '*.yaml' -o -name '*.yml' \) | sort | while read -r f; do cp "$f" ".ci-kustomize/$(echo "$f" | tr / _)"; done
+        printf 'resources:\n' >.ci-kustomize/kustomization.yaml
+        for f in .ci-kustomize/*.y*ml; do [ "$f" = .ci-kustomize/kustomization.yaml ] || echo "  - $(basename "$f")" >>.ci-kustomize/kustomization.yaml; done
+      fi
+      # images: "name=registry/app:tag …" — name is the image as written in the manifests (kustomize semantics)
+      if [ -n "$INPUT_IMAGES" ]; then
+        echo "images:" >>.ci-kustomize/kustomization.yaml
+        for pair in $INPUT_IMAGES; do
+          name=${pair%%=*} new=${pair#*=}
+          if [[ $new == *@* ]]; then
+            printf '  - { name: "%s", newName: "%s", digest: "%s" }\n' "$name" "${new%@*}" "${new#*@}"
+          elif [[ ${new##*/} == *:* ]]; then
+            printf '  - { name: "%s", newName: "%s", newTag: "%s" }\n' "$name" "${new%:*}" "${new##*:}"
+          else
+            printf '  - { name: "%s", newName: "%s" }\n' "$name" "$new"
+          fi >>.ci-kustomize/kustomization.yaml
+          echo "image $name → $new"
+        done
+      fi
+      kubectl kustomize .ci-kustomize >.ci-rendered.yaml
+      kubectl -n "$ns" apply -f .ci-rendered.yaml | tee .ci-applied
+  - name: wait for the rollout
+    run: |
+      ns=$INPUT_NAMESPACE
+      rc=0
+      failed=()
+      for w in $(awk '{print $1}' .ci-applied | grep -E '^(deployment|statefulset|daemonset)'); do
+        kubectl -n "$ns" rollout status "$w" --timeout="$INPUT_TIMEOUT" || { failed+=("$w"); echo "✗ $w did not become ready"; }
+      done
+      ((${#failed[@]})) || exit 0
+      [ "$INPUT_DIAGNOSE" != true ] || kube-diagnose "$ns"
+      # put the previous revision back so the workload is not left half-rolled-out
+      if [ "$INPUT_ROLLBACK" = true ]; then
+        for w in "${failed[@]}"; do
+          if [ "$(kubectl -n "$ns" rollout history "$w" 2>/dev/null | grep -cE '^[0-9]+ ')" -lt 2 ]; then
+            echo "○ $w: first revision, nothing to roll back to"
+            continue
+          fi
+          echo "↩ rolling back $w"
+          kubectl -n "$ns" rollout undo "$w" && kubectl -n "$ns" rollout status "$w" --timeout="$INPUT_TIMEOUT" || echo "✗ rollback of $w did not complete"
+        done
+      fi
+      exit 1

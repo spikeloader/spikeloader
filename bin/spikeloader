@@ -1,0 +1,399 @@
+#!/usr/bin/env bash
+# spikeloader — root Firecracker microVMs, ready in seconds, inside a single VM.
+set -euo pipefail
+
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+source "$(dirname "$SELF")/../host/common.sh"
+
+VERSION="$(cat "$ROOT/VERSION" 2>/dev/null || echo dev)"
+WEB="$ROOT/web"
+# not HOST/PORT: zsh sets HOST to the machine name, and an exported one would put the panel on the network
+WEB_PORT="${SPIKELOADER_PORT:-4100}"
+WEB_HOST="${SPIKELOADER_HOST:-127.0.0.1}"
+TOKEN_FILE="$STATE/web-token"
+UNIT_NAME=spikeloader-web.service
+UNIT_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$UNIT_NAME"
+PG_CONTAINER=spikeloader-postgres
+PG_VOLUME=spikeloader-pgdata
+PG_PASSWORD_FILE="$STATE/pg-password"
+GO_IMAGE=golang:1.26-alpine
+
+usage() {
+  cat <<EOF
+spikeloader $VERSION — root Firecracker microVMs inside a single VM
+
+usage: spikeloader <command> [options]
+
+The outer VM and the microVMs are managed by the CI/CD engine (it runs inside the web panel):
+the outer VM starts when a job is queued and stops when idle; every job gets its own microVM.
+
+CI/CD (pipelines in .spikeloader.yml)
+  ci ls | add | run | runs | show | logs | lint | secret | ...
+                             see: spikeloader ci help
+
+Database (PostgreSQL container $PG_CONTAINER, 127.0.0.1:$PG_PORT)
+  db start | stop | status   start/stop the database (web start starts it too)
+  db psql [args...]          SQL shell on the platform database
+
+Web panel + CI engine (http://$WEB_HOST:$WEB_PORT)
+  web start                  run the daemon (CI engine + API + panel) in the foreground
+  web dev                    same, with the web UI in hot-reload mode
+  web url                    access link with automatic login
+  web token [--rotate]       show or rotate the token (rotating ends all sessions)
+  web service install|uninstall|status|logs
+                             panel as a systemd user service
+
+Inspection and maintenance
+  status [--json]            state of the outer VM and the microVMs
+  vm ls                      microVMs (one per running CI job)
+  vm ssh <id> [cmd...]       root shell or command in a job's microVM (debugging)
+  vm console <id> [lines]    serial console of a microVM
+  shell                      shell on the outer VM
+  down [--purge]             stop the outer VM now (--purge deletes its disk)
+  build                      build the daemon, guest agent (Go) and web UI when their sources changed
+  doctor                     check prerequisites and installation state
+  version
+EOF
+}
+
+need_outer() {
+  outer_running && outer_ssh true 2>/dev/null || die "outer VM is offline — it starts by itself when a CI job is queued"
+}
+
+# ssh joins its arguments into one remote shell command: quote each one
+remote_fcctl() { printf 'sudo fcctl'; printf ' %q' "$@"; }
+fc() { ssh "${SSH_OPTS[@]}" -t lab@127.0.0.1 "$(remote_fcctl "$@")"; }
+fc_batch() { outer_ssh "$(remote_fcctl "$@")"; }
+
+no_root() {
+  [[ $EUID -ne 0 ]] || die "do not run spikeloader as root/sudo (files would end up owned by root). Use your own user, in the kvm and docker groups."
+}
+
+# ---------- database ----------
+
+pg_running() { [[ $(docker inspect -f '{{.State.Running}}' "$PG_CONTAINER" 2>/dev/null) == true ]]; }
+
+ensure_db() {
+  command -v docker >/dev/null || die "Docker not found (the database runs in a container)"
+  if [[ ! -s $PG_PASSWORD_FILE ]]; then
+    (umask 077; head -c 24 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n' >"$PG_PASSWORD_FILE"; echo >>"$PG_PASSWORD_FILE")
+  fi
+  if ! docker container inspect "$PG_CONTAINER" >/dev/null 2>&1; then
+    log "creating the database container $PG_CONTAINER..."
+    docker run -d --name "$PG_CONTAINER" --restart unless-stopped \
+      -p "127.0.0.1:$PG_PORT:5432" \
+      -e POSTGRES_USER=spikeloader -e POSTGRES_DB=spikeloader \
+      -e POSTGRES_PASSWORD="$(tr -d '\n' <"$PG_PASSWORD_FILE")" \
+      -v "$PG_VOLUME:/var/lib/postgresql/data" \
+      "$PG_IMAGE" >/dev/null
+  elif ! pg_running; then
+    docker start "$PG_CONTAINER" >/dev/null
+  fi
+  local i
+  for ((i = 0; i < 60; i++)); do
+    docker exec "$PG_CONTAINER" pg_isready -q -h 127.0.0.1 -U spikeloader -d spikeloader 2>/dev/null && return 0
+    sleep 1
+  done
+  die "the database did not become ready (docker logs $PG_CONTAINER)"
+}
+
+db_cmd() {
+  case ${1:-} in
+    start) ensure_db; log "database ready at 127.0.0.1:$PG_PORT ($PG_CONTAINER)" ;;
+    stop) docker stop "$PG_CONTAINER" >/dev/null && log "database stopped." ;;
+    status)
+      if pg_running; then echo "database: running ($PG_CONTAINER, 127.0.0.1:$PG_PORT)"; else echo "database: stopped"; fi ;;
+    psql) pg_running || die "database stopped (spikeloader db start)"; exec docker exec -it "$PG_CONTAINER" psql -U spikeloader -d spikeloader "${@:2}" ;;
+    *) die "usage: spikeloader db start|stop|status|psql" ;;
+  esac
+}
+
+# ---------- web panel ----------
+
+ensure_token() {
+  if [[ ! -s $TOKEN_FILE ]]; then
+    (umask 077; head -c 24 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n' >"$TOKEN_FILE"; echo >>"$TOKEN_FILE")
+  fi
+}
+
+# the Go toolchain: on PATH, or the user-local install bootstrap.sh/README suggest
+go_bin() {
+  command -v go 2>/dev/null || { [[ -x $HOME/.local/go/bin/go ]] && echo "$HOME/.local/go/bin/go"; } || true
+}
+
+# Builds the daemon (.lab/bin/spikeloaderd) when missing or older than the Go sources. Without a
+# local Go toolchain it builds inside the golang Docker image (module cache kept in .lab/go/).
+ensure_daemon() {
+  local out=$STATE/bin/spikeloaderd
+  local cli=$STATE/bin/spikeloader
+  if [[ -x $out && -x $cli && -z $(find "$ROOT/cmd" "$ROOT/internal" "$ROOT/go.mod" "$ROOT/go.sum" -newer "$out" -print -quit) && -z $(find "$ROOT/cmd" "$ROOT/internal" "$ROOT/go.mod" "$ROOT/go.sum" -newer "$cli" -print -quit) ]]; then
+    return
+  fi
+  log "building the daemon (Go)..."
+  mkdir -p "$STATE/bin"
+  local go
+  go=$(go_bin)
+  if [[ -n $go ]]; then
+    (cd "$ROOT" && CGO_ENABLED=0 "$go" build -trimpath -o "$STATE/bin/" ./cmd/spikeloaderd ./cmd/spikeloader)
+  else
+    command -v docker >/dev/null || die "neither Go (https://go.dev/dl) nor Docker is available to build the daemon"
+    mkdir -p "$STATE/go"
+    docker run --rm --user "$(id -u):$(id -g)" -e CGO_ENABLED=0 -e GOCACHE=/cache/build -e GOMODCACHE=/cache/mod \
+      -v "$ROOT:/src" -v "$STATE/go:/cache" -w /src "$GO_IMAGE" \
+      go build -trimpath -o .lab/bin/ ./cmd/spikeloaderd ./cmd/spikeloader
+  fi
+}
+
+# Installs and builds the web UI (Next.js) when missing or older than its sources.
+ensure_ui() {
+  command -v node >/dev/null || die "Node.js >= 20 not found"
+  if [[ ! -d $WEB/node_modules ]]; then
+    log "installing the web UI dependencies..."
+    (cd "$WEB" && npm ci --no-audit --no-fund --loglevel=error)
+  fi
+  if [[ ! -f $WEB/.next/BUILD_ID || -n $(find "$WEB/app" "$WEB/components" "$WEB/lib" "$WEB/next.config.ts" "$WEB/package.json" -newer "$WEB/.next/BUILD_ID" -print -quit) ]]; then
+    log "building the web UI..."
+    # types left by `next dev` may point at routes that no longer exist and fail the type check
+    rm -rf "$WEB/.next/dev/types"
+    (cd "$WEB" && npm run build --silent)
+  fi
+}
+
+ensure_build() {
+  ensure_daemon
+  bash "$ROOT/host/agent.sh" >/dev/null
+  ensure_ui
+}
+
+web_cmd() {
+  case ${1:-} in
+    start)
+      no_root
+      ensure_token
+      ensure_db
+      ensure_build
+      SPIKELOADER_PORT=$WEB_PORT SPIKELOADER_HOST=$WEB_HOST exec "$STATE/bin/spikeloaderd"
+      ;;
+    dev)
+      # UI with hot reload (next dev); the daemon is rebuilt from source when it changed
+      no_root
+      ensure_token
+      ensure_db
+      ensure_daemon
+      [[ -d $WEB/node_modules ]] || (cd "$WEB" && npm ci --no-audit --no-fund --loglevel=error)
+      SPIKELOADER_UI=dev SPIKELOADER_PORT=$WEB_PORT SPIKELOADER_HOST=$WEB_HOST exec "$STATE/bin/spikeloaderd"
+      ;;
+    url)
+      ensure_token
+      echo "http://$WEB_HOST:$WEB_PORT/login#token=$(tr -d '\n' <"$TOKEN_FILE")"
+      ;;
+    token)
+      if [[ ${2:-} == --rotate ]]; then
+        rm -f "$TOKEN_FILE"
+        ensure_token
+        log "token rotated; open sessions have been ended."
+      else
+        ensure_token
+      fi
+      tr -d '\n' <"$TOKEN_FILE"
+      echo
+      ;;
+    service) web_service "${@:2}" ;;
+    *) die "usage: spikeloader web start|dev|url|token|service" ;;
+  esac
+}
+
+web_service() {
+  command -v systemctl >/dev/null || die "systemd not available"
+  case ${1:-} in
+    install)
+      no_root
+      ensure_token
+      ensure_db
+      ensure_build
+      local node
+      node="$(command -v node)"
+      mkdir -p "$(dirname "$UNIT_FILE")"
+      cat >"$UNIT_FILE" <<EOF
+[Unit]
+Description=spikeloader — CI/CD daemon and web panel
+Documentation=file://$ROOT/README.md
+After=network-online.target docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=$ROOT
+Environment=SPIKELOADER_ROOT=$ROOT
+Environment=SPIKELOADER_PORT=$WEB_PORT
+Environment=SPIKELOADER_HOST=$WEB_HOST
+Environment=PATH=$(dirname "$node"):/usr/local/bin:/usr/bin:/bin
+ExecStartPre=$SELF db start
+ExecStart=$STATE/bin/spikeloaderd
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
+EOF
+      systemctl --user daemon-reload
+      systemctl --user enable --now "$UNIT_NAME"
+      log "service installed: $UNIT_FILE"
+      log "panel: http://$WEB_HOST:$WEB_PORT (access: spikeloader web url)"
+      if [[ $(loginctl show-user "$USER" -p Linger --value 2>/dev/null) != yes ]]; then
+        log "tip: to start at boot without logging in, run: sudo loginctl enable-linger $USER"
+      fi
+      ;;
+    uninstall)
+      systemctl --user disable --now "$UNIT_NAME" 2>/dev/null || true
+      rm -f "$UNIT_FILE"
+      systemctl --user daemon-reload
+      log "service removed."
+      ;;
+    status) systemctl --user status "$UNIT_NAME" --no-pager ;;
+    logs) journalctl --user -u "$UNIT_NAME" -f ;;
+    *) die "usage: spikeloader web service install|uninstall|status|logs" ;;
+  esac
+}
+
+# ---------- microVMs ----------
+
+# required id with a friendly message (outside a subshell, so die exits the script)
+require_id() { [[ ${1:-} =~ ^[0-9]+$ ]] || die "missing microVM id (e.g. spikeloader vm $sub 1)"; }
+
+# microVMs are created and destroyed by CI jobs; these commands only inspect them
+vm_cmd() {
+  local sub=${1:-ls}
+  shift || true
+  case $sub in
+    create|start|stop|restart|pause|resume|rm)
+      die "microVMs are managed by the CI/CD engine (one per job). Start a pipeline instead: spikeloader ci run <project>" ;;
+  esac
+  need_outer
+  case $sub in
+    ls) fc_batch ls ;;
+    ssh)
+      require_id "${1:-}"
+      local id=$1
+      shift
+      if (($#)); then fc_batch ssh "$id" "$*"; else fc ssh "$id"; fi
+      ;;
+    console) require_id "${1:-}"; fc_batch console "$1" "${2:-200}" ;;
+    *) die "unknown subcommand: vm $sub (see spikeloader help)" ;;
+  esac
+}
+
+status_cmd() {
+  local backend="-" state=off
+  [[ -f $STATE/backend ]] && backend=$(cat "$STATE/backend")
+  if outer_running; then state=starting; outer_ssh true 2>/dev/null && state=online; fi
+
+  if [[ ${1:-} == --json ]]; then
+    local inner='{"host":null,"vms":[]}'
+    [[ $state == online ]] && inner=$(fc_batch status)
+    printf '{"version":"%s","outer":{"state":"%s","backend":"%s"},"lab":%s}\n' "$VERSION" "$state" "$backend" "$inner"
+    return
+  fi
+  printf 'spikeloader %s\nouter VM: %s (backend %s, ssh 127.0.0.1:%s)\n' "$VERSION" "$state" "$backend" "$SSH_PORT"
+  if [[ $state == online ]]; then
+    echo
+    fc_batch ls
+  fi
+  if curl -fs -m 2 "http://$WEB_HOST:$WEB_PORT/api/health" >/dev/null 2>&1; then
+    printf '\npanel: http://%s:%s\n' "$WEB_HOST" "$WEB_PORT"
+  else
+    printf '\npanel: stopped (spikeloader web start) — without it the CI engine does not run\n'
+  fi
+}
+
+# ---------- doctor ----------
+
+doctor() {
+  local fail=0
+  ok() { printf '  \033[32m✓\033[0m %s\n' "$*"; }
+  warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
+  bad() { printf '  \033[31m✗\033[0m %s\n' "$*"; fail=1; }
+
+  echo "spikeloader $VERSION — $ROOT"
+  [[ $EUID -ne 0 ]] && ok "running as $USER" || bad "running as root (use your own user)"
+
+  if [[ -r /dev/kvm && -w /dev/kvm ]]; then ok "/dev/kvm accessible"; else bad "/dev/kvm not accessible (kvm group)"; fi
+  local nested
+  nested=$(cat /sys/module/kvm_intel/parameters/nested /sys/module/kvm_amd/parameters/nested 2>/dev/null || true)
+  [[ $nested == *Y* || $nested == *1* ]] && ok "nested virtualization enabled" || bad "nested virtualization disabled (kvm_intel/kvm_amd nested=1)"
+
+  # Docker runs the database and builds the microVM kernel; it also runs QEMU without a native install
+  if command -v docker >/dev/null && docker info >/dev/null 2>&1; then
+    ok "Docker available"
+  else
+    bad "Docker not usable (install it and add your user to the docker group)"
+  fi
+  if command -v qemu-system-x86_64 >/dev/null && command -v cloud-localds >/dev/null; then
+    ok "native QEMU available"
+  else
+    ok "QEMU runs in a container (docker backend)"
+  fi
+  [[ -f $STATE/kernel/vmlinux-$GUEST_KERNEL ]] && ok "microVM kernel $GUEST_KERNEL built" || warn "microVM kernel $GUEST_KERNEL not built yet (the first job builds it, a few minutes)"
+
+  for c in ssh scp curl git npm make; do command -v $c >/dev/null && ok "$c" || bad "$c missing"; done
+
+  if command -v node >/dev/null; then
+    local v
+    v=$(node -p 'process.versions.node')
+    [[ $(printf '%s\n' 20.9.0 "$v" | sort -V | head -1) == 20.9.0 ]] && ok "Node.js $v" || bad "Node.js $v (needs >= 20.9)"
+  else
+    bad "Node.js missing (web panel; >= 20.9)"
+  fi
+  if [[ -n $(go_bin) ]]; then
+    ok "Go $("$(go_bin)" env GOVERSION 2>/dev/null) (builds the daemon)"
+  else
+    warn "Go not installed: the daemon is built in the $GO_IMAGE container (slower; https://go.dev/dl)"
+  fi
+  [[ -x $STATE/bin/spikeloaderd ]] && ok "daemon built" || warn "daemon not built yet (spikeloader web start builds it)"
+  [[ -d $WEB/node_modules ]] && ok "web UI dependencies installed" || warn "web UI dependencies missing (spikeloader web start installs them)"
+  [[ -f $WEB/.next/BUILD_ID ]] && ok "web UI built" || warn "web UI not built yet"
+  if pg_running; then ok "database running ($PG_CONTAINER, 127.0.0.1:$PG_PORT)"; else warn "database stopped (spikeloader db start; web start starts it too)"; fi
+
+  local foreign
+  foreign=$(find "$ROOT" -path "$WEB/node_modules" -prune -o -path "$WEB/.next-root-owned" -prune -o ! -user "$(id -u)" -print -quit 2>/dev/null)
+  [[ -z $foreign ]] && ok "project files are owned by $USER" || bad "some files have another owner (e.g. $foreign) — sudo was probably used; fix with: sudo chown -R $USER: $ROOT"
+
+  local avail
+  avail=$(df -Pk "$ROOT" | awk 'NR==2 {print int($4/1024/1024)}')
+  ((avail >= 10)) && ok "${avail} GB of free disk" || warn "only ${avail} GB free (>= 10 GB recommended)"
+
+  if outer_running; then
+    outer_ssh true 2>/dev/null && ok "outer VM online" || warn "outer VM is on, but SSH is not up yet"
+  else
+    warn "outer VM is off (it starts when a CI job is queued)"
+  fi
+  if curl -fs -m 2 "http://$WEB_HOST:$WEB_PORT/api/health" >/dev/null 2>&1; then
+    ok "panel responding at http://$WEB_HOST:$WEB_PORT"
+  elif ss -ltn 2>/dev/null | grep -q ":$WEB_PORT "; then
+    bad "port $WEB_PORT is taken by another process (use SPIKELOADER_PORT=<other>)"
+  else
+    warn "panel stopped (spikeloader web start or web service install)"
+  fi
+  [[ -f $UNIT_FILE ]] && ok "systemd service installed" || warn "systemd service not installed (optional)"
+  return $fail
+}
+
+# ---------- main ----------
+
+cmd=${1:-help}
+shift || true
+case $cmd in
+  up) die "the outer VM is managed by the CI/CD engine: it starts when a job is queued (spikeloader ci run <project>)" ;;
+  down) exec "$ROOT/host/down.sh" "$@" ;;
+  status) status_cmd "$@" ;;
+  shell) exec "$ROOT/host/ssh.sh" ;;
+  vm) vm_cmd "$@" ;;
+  web) web_cmd "$@" ;;
+  build) no_root; ensure_build ;;
+  db) db_cmd "$@" ;;
+  ci) ensure_daemon; exec "$STATE/bin/spikeloader" ci "$@" ;;
+  doctor) doctor ;;
+  version|--version|-v) echo "spikeloader $VERSION" ;;
+  help|--help|-h) usage ;;
+  *) usage >&2; exit 1 ;;
+esac

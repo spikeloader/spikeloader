@@ -1,0 +1,80 @@
+{
+  "configured": true,
+  "kubeconfig": null,
+  "error": null,
+  "cluster": {
+    "context": "demo",
+    "server": "https://localhost:6443",
+    "version": "",
+    "platform": "",
+    "metrics": false
+  },
+  "nodes": [
+    {
+      "name": "node1",
+      "ready": false,
+      "schedulable": false,
+      "roles": [
+        "control-plane"
+      ],
+      "version": "",
+      "os": "",
+      "runtime": "",
+      "cpuMilli": 0,
+      "memBytes": 0,
+      "cpuUsedMilli": null,
+      "memUsedBytes": null,
+      "pods": 0,
+      "maxPods": 0,
+      "createdAt": 0
+    }
+  ],
+  "namespaces": [
+    {
+      "name": "default",
+      "phase": "Active",
+      "workloads": 0,
+      "pods": 0,
+      "podsRunning": 0
+    }
+  ],
+  "workloads": [
+    {
+      "kind": "",
+      "namespace": "",
+      "name": "demo",
+      "ready": 0,
+      "desired": 0,
+      "updated": 0,
+      "images": [],
+      "createdAt": 0,
+      "health": ""
+    }
+  ],
+  "pods": {
+    "total": 0,
+    "running": 0,
+    "pending": 0,
+    "failed": 0,
+    "succeeded": 0
+  },
+  "problems": [
+    {
+      "namespace": "",
+      "name": "pod",
+      "phase": "",
+      "reason": "",
+      "restarts": 0
+    }
+  ],
+  "warnings": [
+    {
+      "namespace": "default",
+      "object": "pod",
+      "reason": "",
+      "message": "",
+      "count": 0,
+      "at": 0
+    }
+  ]
+}

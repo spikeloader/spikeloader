@@ -1,0 +1,166 @@
+{
+  "body": {
+    "globalSecrets": [],
+    "images": [
+      {
+        "description": "Base CI image: everything else builds on top of it.",
+        "from": null,
+        "name": "base"
+      },
+      {
+        "description": "Docker Engine + buildx + compose, started at boot (builds and pushes images inside the job).",
+        "from": "base",
+        "name": "docker"
+      },
+      {
+        "description": "Latest stable Go.",
+        "from": "base",
+        "name": "go"
+      },
+      {
+        "description": "Kubernetes tooling: kubectl, helm, kubeconform and kube-login (kubeconfig from the KUBECONFIG_DATA secret).",
+        "from": "base",
+        "name": "kube"
+      },
+      {
+        "description": "Node.js LTS (22.x) with corepack (pnpm/yarn).",
+        "from": "base",
+        "name": "node"
+      },
+      {
+        "description": "Python 3 with uv, pipx and build headers.",
+        "from": "base",
+        "name": "python"
+      },
+      {
+        "description": "Security scanners: Trivy (vulnerabilities, misconfig, secrets), Gitleaks (secrets), Semgrep (SAST).",
+        "from": "base",
+        "name": "security"
+      }
+    ],
+    "projects": [],
+    "runs": [],
+    "stats": {
+      "capacity": null,
+      "idleShutdownAt": null,
+      "idleShutdownMin": 30,
+      "maxJobs": 0,
+      "outer": "",
+      "outerOk": false,
+      "queued": 0,
+      "running": 0
+    },
+    "templates": [
+      {
+        "description": "Installs or upgrades a Helm release (rolled back automatically if it does not become ready).",
+        "image": "kube",
+        "inputs": {
+          "chart": "",
+          "context": "",
+          "diagnose": "true",
+          "namespace": "default",
+          "release": "",
+          "repo": "",
+          "set": "",
+          "timeout": "5m",
+          "values": "",
+          "version": ""
+        },
+        "name": "deploy/helm",
+        "secrets": [
+          "KUBECONFIG_DATA"
+        ]
+      },
+      {
+        "description": "Applies Kubernetes manifests (or a kustomization), optionally sets the image and waits for the rollout.",
+        "image": "kube",
+        "inputs": {
+          "context": "",
+          "create_namespace": "true",
+          "diagnose": "true",
+          "images": "",
+          "namespace": "default",
+          "path": "k8s/",
+          "rollback": "true",
+          "timeout": "5m"
+        },
+        "name": "deploy/kubectl",
+        "secrets": [
+          "KUBECONFIG_DATA"
+        ]
+      },
+      {
+        "description": "Deploys files over SSH with rsync and optionally runs a remote command.",
+        "image": "base",
+        "inputs": {
+          "command": "",
+          "host": "",
+          "path": "",
+          "port": "22",
+          "source": "dist/",
+          "user": "deploy"
+        },
+        "name": "deploy/ssh",
+        "secrets": [
+          "SSH_PRIVATE_KEY"
+        ]
+      },
+      {
+        "description": "Builds a Docker image and optionally pushes it (push: \"true\"; REGISTRY_USER/REGISTRY_PASSWORD secrets if the registry needs login).",
+        "image": "docker",
+        "inputs": {
+          "build_args": "",
+          "context": ".",
+          "file": "Dockerfile",
+          "insecure_registry": "",
+          "push": "false",
+          "registry": "",
+          "tag": ""
+        },
+        "name": "docker/build",
+        "secrets": []
+      },
+      {
+        "description": "Validates Kubernetes manifests, kustomizations and Helm charts against the API schemas (no cluster needed).",
+        "image": "kube",
+        "inputs": {
+          "charts": "",
+          "kubernetes_version": "",
+          "path": "k8s/"
+        },
+        "name": "k8s/validate",
+        "secrets": []
+      },
+      {
+        "description": "Gitleaks: hardcoded secrets in the code and in the fetched git history.",
+        "image": "security",
+        "inputs": {
+          "exit_code": "1"
+        },
+        "name": "scanners/gitleaks",
+        "secrets": []
+      },
+      {
+        "description": "Semgrep: static analysis (SAST) with the community rule sets.",
+        "image": "security",
+        "inputs": {
+          "config": "p/default"
+        },
+        "name": "scanners/semgrep",
+        "secrets": []
+      },
+      {
+        "description": "Trivy: vulnerabilities in dependencies, IaC misconfigurations and secrets in the repository.",
+        "image": "security",
+        "inputs": {
+          "exit_code": "1",
+          "scanners": "vuln,misconfig,secret",
+          "severity": "HIGH,CRITICAL"
+        },
+        "name": "scanners/trivy",
+        "secrets": []
+      }
+    ]
+  },
+  "status": 200
+}
